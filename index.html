@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+  <meta charset="UTF-8">
+  <!-- LEARN 1: the viewport tag makes the page scale properly in small pop-up windows -->
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spelling Helper</title>
+  <style>
+    /* LEARN 2: CSS variables. Change a colour once here, it updates everywhere. */
+    :root {
+      --bg: #FDFBF7;
+      --card: #FFF8E7;
+      --border: #E2D9C8;
+      --text: #1E1E1E;
+      --muted: #555;
+      --blue: #2B6CB0;
+      --red: #C53030;
+      --chip: #EFECE6;
+    }
+
+    body {
+      font-family: Verdana, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+
+    button {
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    /* LEARN 3: keyboard users need to SEE where focus is. The original had no focus style. */
+    button:focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 2px;
+    }
+
+    #mic-btn {
+      font-size: 16px;
+      font-weight: bold;
+      padding: 12px 20px;
+      border: none;
+      border-radius: 10px;
+      background-color: var(--blue);
+      color: white;
+      width: 100%;
+      margin-bottom: 12px;
+    }
+
+    #mic-btn.listening { background-color: var(--red); }
+
+    .word-box {
+      margin: 10px 0;
+      padding: 16px;
+      width: 90%;
+      min-height: 75px;
+      background-color: var(--card);
+      border: 2px solid var(--border);
+      border-radius: 12px;
+      color: inherit;
+      font-family: inherit;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #main-word {
+      font-size: 36px;
+      font-weight: bold;
+      letter-spacing: 3px;
+      overflow-wrap: anywhere; /* long words wrap instead of overflowing */
+    }
+
+    #syllables {
+      font-size: 20px;
+      color: var(--blue);
+      letter-spacing: 2px;
+      margin-top: 8px;
+      font-weight: bold;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    #history {
+      width: 95%;
+      text-align: left;
+      font-size: 18px;
+      letter-spacing: 1.5px;
+    }
+
+    .history-item {
+      width: 100%;
+      background: var(--chip);
+      color: inherit;
+      font-size: inherit;
+      letter-spacing: inherit;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      margin: 6px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      text-align: left;
+    }
+
+    .history-syllables {
+      font-size: 14px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+
+  <button id="mic-btn" type="button">🎤 Tap &amp; Say a Word</button>
+
+  <!-- LEARN 4: use <button> for anything clickable. A <div> with onclick can't be
+       reached with Tab or triggered with Enter/Space; a <button> gets that for free.
+       aria-live tells screen readers to announce when the word changes. -->
+  <button id="word-card" class="word-box" type="button" title="Click to hear word">
+    <span id="main-word" aria-live="polite">...</span>
+    <span id="syllables"></span>
+  </button>
+  <div class="hint">Tap any word to hear it read out loud</div>
+
+  <div id="history"></div>
+
+  <script>
+    'use strict'; // LEARN 5: strict mode turns silent mistakes (like typos in variable names) into errors
+
+    // ---------- 1. SETTINGS ----------
+    // LEARN 6: "magic values" buried in code are hard to find. Put them in one place.
+    const CONFIG = {
+      listenLang: 'en-AU',
+      speechRate: 0.85,
+      maxHistory: 5,
+    };
+
+    // ---------- 2. GRAB PAGE ELEMENTS ONCE ----------
+    const micBtn = document.getElementById('mic-btn');
+    const wordCard = document.getElementById('word-card');
+    const mainWord = document.getElementById('main-word');
+    const syllablesDiv = document.getElementById('syllables');
+    const historyDiv = document.getElementById('history');
+
+    // ---------- 3. STATE ----------
+    // LEARN 7: the original checked the on-screen TEXT ("...", "try again") to decide
+    // if there was a real word. That's fragile: change the message and it breaks.
+    // Instead, store the real data in a variable.
+    let currentWord = '';
+    let isListening = false;
+
+    // ---------- 4. PURE LOGIC (no page access, easy to test) ----------
+
+    /**
+     * Splits ONE word into syllables. This is a rule of thumb, not a dictionary,
+     * so it will sometimes be wrong. Returns an array of chunks.
+     */
+    function getSyllables(word) {
+      if (word.length <= 3) return [word];
+
+      // Regex: optional consonants, then vowels, then (maybe) trailing consonants.
+      // [^aeiouy] = "any character that is not a vowel"
+      const pattern = /[^aeiouy]*[aeiouy]+(?:[^aeiouy]*$|[^aeiouy](?=[^aeiouy]))?/gi;
+      const chunks = word.match(pattern) || [word];
+
+      // LEARN 8: silent "e". "make" matched as "ma · ke" (wrong). If the last chunk is
+      // consonants + "e" (but not "-le" like "ta·ble"), glue it back on.
+      const last = chunks[chunks.length - 1];
+      if (chunks.length > 1 && /^[^aeiouy]+e$/i.test(last) && !/le$/i.test(last)) {
+        chunks.pop();
+        chunks[chunks.length - 1] += last;
+      }
+      return chunks;
+    }
+
+    /** Breaks a whole phrase into words, each shown as "beau · ti · ful". */
+    function formatSyllables(phrase) {
+      return phrase
+        .split(/\s+/) // any run of spaces, not just a single space
+        .map(word => getSyllables(word).join(' · '))
+        .join('   ');
+    }
+
+    /** Removes trailing punctuation the speech engine sometimes adds. */
+    function cleanTranscript(text) {
+      return text.trim().replace(/[.,!?]+$/, '');
+    }
+
+    // ---------- 5. FUNCTIONS THAT CHANGE THE PAGE ----------
+
+    function showMessage(message) {
+      currentWord = ''; // nothing real to read aloud
+      mainWord.textContent = message;
+      syllablesDiv.textContent = '';
+    }
+
+    function showWord(word) {
+      currentWord = word;
+      const syllableText = formatSyllables(word);
+      mainWord.textContent = word;
+      // Only show the breakdown if it's actually different from the word
+      syllablesDiv.textContent = syllableText !== word ? syllableText : '';
+      addToHistory(word, syllableText);
+    }
+
+    function speakWord(text) {
+      if (!text) return;
+      window.speechSynthesis.cancel(); // stop anything still speaking so clicks don't queue up
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = CONFIG.listenLang;
+      utterance.rate = CONFIG.speechRate;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function addToHistory(word, syllableText) {
+      // LEARN 9: createElement + textContent is SAFE. Using innerHTML with spoken
+      // text would let odd input be treated as HTML code. Keep doing it this way.
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'history-item';
+
+      const wordSpan = document.createElement('span');
+      wordSpan.textContent = word;
+
+      const sylSpan = document.createElement('span');
+      sylSpan.className = 'history-syllables';
+      sylSpan.textContent = syllableText !== word ? syllableText : '';
+
+      item.append(wordSpan, sylSpan);
+      item.addEventListener('click', () => speakWord(word));
+
+      historyDiv.prepend(item); // newest at the top
+      while (historyDiv.children.length > CONFIG.maxHistory) {
+        historyDiv.lastElementChild.remove();
+      }
+    }
+
+    function setListening(listening) {
+      isListening = listening;
+      micBtn.textContent = listening ? '👂 Listening...' : '🎤 Tap & Say a Word';
+      micBtn.classList.toggle('listening', listening);
+    }
+
+    // ---------- 6. SPEECH RECOGNITION SETUP ----------
+    // LEARN 10: different errors need different messages. The original said
+    // "Didn't catch that" even when the real problem was a blocked microphone.
+    const ERROR_MESSAGES = {
+      'not-allowed': 'Microphone is blocked. Allow it in Chrome settings.',
+      'service-not-allowed': 'Microphone is blocked. Allow it in Chrome settings.',
+      'audio-capture': 'No microphone found',
+      'network': 'No internet. Speech needs Wi-Fi.',
+      'no-speech': "Didn't hear anything, try again",
+    };
+
+    function setupRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+      if (!SpeechRecognition) {
+        showMessage('Please open in Chrome or Edge');
+        micBtn.disabled = true;
+        return;
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.lang = CONFIG.listenLang;
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+
+      micBtn.addEventListener('click', () => {
+        // LEARN 11: calling start() while already listening throws an error.
+        // Guard against it, and use try/catch for anything that can fail.
+        if (isListening) {
+          recognition.stop();
+          return;
+        }
+        try {
+          recognition.start();
+          setListening(true);
+        } catch (err) {
+          console.error('Could not start listening:', err);
+          setListening(false);
+        }
+      });
+
+      recognition.addEventListener('result', (event) => {
+        const spoken = cleanTranscript(event.results[0][0].transcript);
+        if (spoken) showWord(spoken);
+      });
+
+      recognition.addEventListener('error', (event) => {
+        showMessage(ERROR_MESSAGES[event.error] || "Didn't catch that, try again");
+      });
+
+      // "end" fires after success AND after errors, so it's the one place to reset the button
+      recognition.addEventListener('end', () => setListening(false));
+    }
+
+    // ---------- 7. START THE APP ----------
+    wordCard.addEventListener('click', () => speakWord(currentWord));
+    setupRecognition();
+  </script>
+</body>
+</html>
