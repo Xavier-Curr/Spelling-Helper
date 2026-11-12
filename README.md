@@ -2,7 +2,7 @@
 
 A small, single-file web app that helps with spelling. Say a word out loud and it shows the word, breaks it into syllables, and reads it back. Built for a dyslexia-friendly, pop-up-window workflow alongside an essay document.
 
-**Live version:** https://Xavier-Curr.github.io/spelling-helper/  
+**Live version:** https://Xavier-Curr.github.io/Spelling-Helper/  
 
 ## Features
 
